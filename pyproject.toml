@@ -1,14 +1,14 @@
 [project]
-name = "comfyui-inpaint-cropandstitch"
+name = "wtq-comfyui-inpaint-cropandstitch"
 description = "'✂️ Inpaint Crop' is a node that crops an image before sampling. The context area can be specified via the mask, expand pixels and expand factor or via a separate (optional) mask.\n'✂️ Inpaint Stitch' is a node that stitches the inpainted image back into the original image without altering unmasked areas."
 version = "1.0.0"
 license = { file = "LICENSE" }
 
 [project.urls]
-Repository = "https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch"
+Repository = "https://github.com/waytooquick/wtq-ComfyUI-Inpaint-CropAndStitch/"
 #  Used by Comfy Registry https://comfyregistry.org
 
 [tool.comfy]
-PublisherId = "lquesada"
-DisplayName = "ComfyUI-Inpaint-CropAndStitch"
+PublisherId = "wtq"
+DisplayName = "wtq-ComfyUI-Inpaint-CropAndStitch"
 Icon = ""
