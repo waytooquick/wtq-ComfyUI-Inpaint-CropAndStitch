@@ -497,6 +497,8 @@ class InpaintStitch:
                 "stitch": ("STITCH",),
                 "inpainted_image": ("IMAGE",),
                 "rescale_algorithm": (["nearest", "bilinear", "bicubic", "bislerp", "lanczos", "box", "hamming"], {"default": "bislerp"}),
+                "fill_mask_holes": ("BOOLEAN", {"default": False}),  # Added fill_mask_holes parameter
+                "blur_mask_pixels": ("FLOAT", {"default": 16.0, "min": 0.0, "max": 64.0, "step": 0.1}),  # Added blur_mask_pixels parameter
             }
         }
 
@@ -506,6 +508,45 @@ class InpaintStitch:
     RETURN_NAMES = ("image",)
 
     FUNCTION = "inpaint_stitch"
+
+    def grow_and_blur_mask(self, mask, blur_pixels):
+        if blur_pixels > 0.001:
+            sigma = blur_pixels / 4
+            growmask = mask.reshape((-1, mask.shape[-2], mask.shape[-1])).cpu()
+            out = []
+            for m in growmask:
+                mask_np = m.numpy()
+                kernel_size = math.ceil(sigma * 1.5 + 1)
+                kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+                dilated_mask = grey_dilation(mask_np, footprint=kernel)
+                output = dilated_mask.astype(np.float32) * 255
+                output = torch.from_numpy(output)
+                out.append(output)
+            mask = torch.stack(out, dim=0)
+            mask = torch.clamp(mask, 0.0, 1.0)
+
+            mask_np = mask.numpy()
+            filtered_mask = gaussian_filter(mask_np, sigma=sigma)
+            mask = torch.from_numpy(filtered_mask)
+            mask = torch.clamp(mask, 0.0, 1.0)
+
+        return mask
+
+    def fill_mask_holes_function(self, mask):
+        holemask = mask.reshape((-1, mask.shape[-2], mask.shape[-1])).cpu()
+        out = []
+        for m in holemask:
+            mask_np = m.numpy()
+            binary_mask = mask_np > 0
+            struct = np.ones((5, 5))
+            closed_mask = binary_closing(binary_mask, structure=struct, border_value=1)
+            filled_mask = binary_fill_holes(closed_mask)
+            output = filled_mask.astype(np.float32) * 255
+            output = torch.from_numpy(output)
+            out.append(output)
+        mask = torch.stack(out, dim=0)
+        mask = torch.clamp(mask, 0.0, 1.0)
+        return mask
 
     # This function is from comfy_extras: https://github.com/comfyanonymous/ComfyUI
     def composite(self, destination, source, x, y, mask=None, multiplier=8, resize_source=False):
@@ -535,14 +576,14 @@ class InpaintStitch:
 
         mask = mask[:, :, :visible_height, :visible_width]
         inverse_mask = torch.ones_like(mask) - mask
-            
+
         source_portion = mask * source[:, :, :visible_height, :visible_width]
-        destination_portion = inverse_mask  * destination[:, :, top:bottom, left:right]
+        destination_portion = inverse_mask * destination[:, :, top:bottom, left:right]
 
         destination[:, :, top:bottom, left:right] = source_portion + destination_portion
         return destination
 
-    def inpaint_stitch(self, stitch, inpainted_image, rescale_algorithm):
+    def inpaint_stitch(self, stitch, inpainted_image, rescale_algorithm, fill_mask_holes=False, blur_mask_pixels=16.0):
         results = []
 
         batch_size = inpainted_image.shape[0]
@@ -554,7 +595,7 @@ class InpaintStitch:
                 # Extract the value at the specified index and assign it to the single_stitch dictionary
                 one_stitch[key] = stitch[key][b]
             one_image = one_image.unsqueeze(0)
-            one_image, = self.inpaint_stitch_single_image(one_stitch, one_image, rescale_algorithm)
+            one_image, = self.inpaint_stitch_single_image(one_stitch, one_image, rescale_algorithm, fill_mask_holes, blur_mask_pixels)
             one_image = one_image.squeeze(0)
             results.append(one_image)
 
@@ -563,7 +604,7 @@ class InpaintStitch:
 
         return (result_batch,)
 
-    def inpaint_stitch_single_image(self, stitch, inpainted_image, rescale_algorithm):
+    def inpaint_stitch_single_image(self, stitch, inpainted_image, rescale_algorithm, fill_mask_holes=False, blur_mask_pixels=16.0):
         original_image = stitch['original_image']
         cropped_mask_blend = stitch['cropped_mask_blend']
         x = stitch['x']
@@ -588,7 +629,7 @@ class InpaintStitch:
 
             samples = rescale(samples, width, height, rescale_algorithm)
             inpainted_image = samples.movedim(1, -1)
-            
+
             samples = cropped_mask_blend.movedim(-1, 1)
             samples = samples.unsqueeze(0)
             samples = rescale(samples, width, height, rescale_algorithm)
@@ -596,13 +637,18 @@ class InpaintStitch:
             cropped_mask_blend = samples.movedim(1, -1)
             cropped_mask_blend = torch.clamp(cropped_mask_blend, 0.0, 1.0)
 
+        # Apply fill_mask_holes if requested
+        if fill_mask_holes:
+            cropped_mask_blend = self.fill_mask_holes_function(cropped_mask_blend)
+            if blur_mask_pixels > 0.001:
+                cropped_mask_blend = self.grow_and_blur_mask(cropped_mask_blend, blur_mask_pixels)
+
         output = self.composite(stitched_image, inpainted_image.movedim(-1, 1), x, y, cropped_mask_blend, 1).movedim(1, -1)
 
         # Crop out from the extended dimensions back to original.
         cropped_output = output[:, start_y:start_y + initial_height, start_x:start_x + initial_width, :]
         output = cropped_output
         return (output,)
-
 
 class InpaintExtendOutpaint:
     """
